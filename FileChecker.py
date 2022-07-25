@@ -22,7 +22,7 @@ class FileChecker:
 
     # for GUI
     dim = '720x360'
-    path_width = 50
+    path_width = 80
     num_width = 10
 
     def __init__(self):
@@ -91,7 +91,10 @@ class FileChecker:
         # remote dir has to be a file, will implement get_d or get_r in future if needed
         if os.path.isdir(self.ldir_var.get()):
             filename = find_filename(self.rdir_var.get())
-            self.sftp.get(self.rdir_var.get(), self.ldir_var.get() + filename)
+            if self.ldir_var.get().endswith('/'):
+                self.sftp.get(self.rdir_var.get(), self.ldir_var.get() + filename)
+            else:
+                self.sftp.get(self.rdir_var.get(), self.ldir_var.get() + '/' + filename)
         else:
             self.sftp.get(self.rdir_var.get(), self.ldir_var.get())
 

@@ -65,15 +65,15 @@ class NodeChecker:
     More utilities could be added if needed.
     """
     user = os.environ.get('USER')
-    cwd = os.environ.get('PWD')
+    cwd = os.environ.get('PWD') + '/'
     command = f'condor_q -global {user}'
-    navigator = RCFNavigator(command)
-    buffer = AutoBuffer(maxsize=2)
 
     def __init__(self):
         """
         Initializer, pretty does everything already
         """
+        self.navigator = RCFNavigator(self.command)
+        self.buffer = AutoBuffer(maxsize=2)
         for line in self.navigator.get_output():
             # Popen std output contains an extra new line at the end
             line_str = line[:-1].decode('utf-8')
@@ -103,11 +103,9 @@ class LongKiller:
     A job killer that targets jobs that have been running too long. Thresholds can be set
     """
     user = os.environ.get('USER')
-    cwd = os.environ.get('PWD')
+    cwd = os.environ.get('PWD') + '/'
     node = os.environ.get('HOST')
     command = f'condor_q -global {user} | grep {cwd}'
-    navigator = RCFNavigator(command)
-    bad_id_list = []
 
     def __init__(self, _day, _hour=0):
         """
@@ -115,13 +113,15 @@ class LongKiller:
         :param _day: Day threshold
         :param _hour: Hour threshold
         """
+        self.navigator = RCFNavigator(self.command)
+        self.bad_id_list = []
         for line in self.navigator.get_output():
             # Popen std output contains an extra new line at the end
             line_str = line[:-1].decode('utf-8')
             run_time_str = line_str.split()[4]
             day = int(run_time_str.split('+')[0])
             hour = day*24+int(run_time_str.split('+')[1].split(':')[0])
-            if hour > _day*24+_hour:
+            if hour >= _day*24+_hour:
                 self.bad_id_list.append(line_str.split()[0])
             else:
                 break
@@ -144,9 +144,48 @@ class LongKiller:
         correct_node = NodeChecker().get_node()
         if correct_node != self.node:
             print(f'You are not on the right node! Go to {correct_node}.')
-            return
+            override = input("Kill jobs anyway? (y/n)")
+            if override != 'y':
+                return
 
         # job killer
         for job in self.bad_id_list:
             sp.run(['condor_rm', job])
+
+
+class DateGetter:
+    """
+    Find the current date, output in Month_Date format, e.g., March_26
+    """
+    command = 'date'
+
+    def __init__(self):
+        self.navigator = RCFNavigator(self.command)
+        line = self.navigator.get_output().readline()
+        self.month, self.date = [line.split()[i].decode('utf-8') for i in (1, 2)]
+        # print(f'{month}_{date}')
+
+    def formatted_date(self):
+        return f'{self.month}_{self.date}'
+
+class FileMover:
+    """
+    Find files in the working directory with same names as those in another given directory,
+    then move those files to a third designated directory
+    """
+    command = 'ls -1a '
+
+    def __init__(self, query_dir):
+        """
+        Initialize and obtain a list of file names
+        :param query_dir: the directory with files with the desired names (NOT the working directory)
+        """
+        self.navigator = RCFNavigator(self.command + query_dir)
+        self.filenames = [filename[:-1].decode('utf-8') for filename in self.navigator.get_output()][2:]
+
+    def move(self, working_dir, target_dir):
+        for file in self.filenames:
+           sp.run(['mv', working_dir+file, target_dir+file])
+        # print(self.filenames)
+
 
