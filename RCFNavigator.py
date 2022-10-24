@@ -36,7 +36,6 @@ class RCFNavigator:
         """
         return self.p.stdout
 
-
 class AutoBuffer(queue.Queue):
     """
     A simple helper structure based on queue.Queue that automatically pops out the first-in
@@ -56,7 +55,6 @@ class AutoBuffer(queue.Queue):
         if self.full():
             self.get()
         self.put(element)
-
 
 class NodeChecker:
     """
@@ -97,10 +95,12 @@ class NodeChecker:
         """
         return int(self.get_node()[4:])
 
-
 class LongKiller:
     """
     A job killer that targets jobs that have been running too long. Thresholds can be set
+    For instance, to kill jobs that have been running for one day, you can do
+        job_killer = LongKiller(1,0)
+        job_killer.kill_bad_job()
     """
     user = os.environ.get('USER')
     cwd = os.environ.get('PWD') + '/'
@@ -115,14 +115,18 @@ class LongKiller:
         """
         self.navigator = RCFNavigator(self.command)
         self.bad_id_list = []
+        self.bad_sched_list = []
+
         for line in self.navigator.get_output():
             # Popen std output contains an extra new line at the end
             line_str = line[:-1].decode('utf-8')
             run_time_str = line_str.split()[4]
             day = int(run_time_str.split('+')[0])
             hour = day*24+int(run_time_str.split('+')[1].split(':')[0])
+
             if hour >= _day*24+_hour:
                 self.bad_id_list.append(line_str.split()[0])
+                self.bad_sched_list.append(line_str.split()[11].split('/')[-1].split('.')[0])
             else:
                 break
 
@@ -139,6 +143,11 @@ class LongKiller:
         It seems a user can either kill all jobs from an arbitrary node
         by doing condor_rm -name $NODE $USER, or kill a specific job from the same
         node using condor_rm $JOBID, but not a specific job from an arbitrary node!
+
+        When running jobs from more than one directory on the same node, the node
+        getter may not return the correct node. But if you are on the right node,
+        you should still be able to kill the jobs corresponding to your PWD by overriding
+        (answering 'y' to the question 'Kill jobs anyway?')
         """
         # verify we are on the correct node
         correct_node = NodeChecker().get_node()
@@ -149,9 +158,30 @@ class LongKiller:
                 return
 
         # job killer
-        for job in self.bad_id_list:
-            sp.run(['condor_rm', job])
+        for process in self.bad_id_list:
+            sp.run(['condor_rm', process])
 
+    def kill_and_resubmit(self, rel_path = '.'):
+        """
+        Kill the bad jobs found and resubmit if the sched file can be found
+        in the relative path provided
+        :param rel_path: relative path where the sched is store, default is
+                         current directory
+        """
+        # verify we are on the correct node
+        correct_node = NodeChecker().get_node()
+        if correct_node != self.node:
+            print(f'You are not on the right node! Go to {correct_node}.')
+            override = input("Kill jobs anyway? (y/n)")
+            if override != 'y':
+                return
+
+        # job killer
+        for index, process in enumerate(self.bad_id_list):
+            sched = self.bad_sched_list[index].split('_')[0]
+            job_number = self.bad_sched_list[index].split('_')[1]
+            sp.run(['condor_rm', process])
+            sp.run(['star-submit', '-r', job_number, f'{sched}.session.xml'])
 
 class DateGetter:
     """
