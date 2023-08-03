@@ -176,12 +176,12 @@ class LongKiller:
             if override != 'y':
                 return
 
-        # job killer
+        # job killer and resubmitter
         for index, process in enumerate(self.bad_id_list):
             sched = self.bad_sched_list[index].split('_')[0]
             job_number = self.bad_sched_list[index].split('_')[1]
-            sp.run(['condor_rm', process])
-            sp.run(['star-submit', '-r', job_number, f'{sched}.session.xml'])
+            # sp.run(['condor_rm', process])
+            sp.run(['star-submit', '-kr', job_number, f'{sched}.session.xml'])
 
 class DateGetter:
     """
