@@ -4,6 +4,10 @@ import queue
 import subprocess as sp
 import os
 import time
+import smtplib
+from typing import Any
+import signal
+import threading
 
 
 class RCFNavigator:
@@ -218,4 +222,103 @@ class FileMover:
            sp.run(['mv', working_dir+file, target_dir+file])
         # print(self.filenames)
 
+class JobMonitor:
+    """
+    Monitor the status of jobs on RCF. Automatically resubmit if there are many missing files.
+    Email notification on completion.
+    """
+    user = os.environ.get('USER')
+    cwd = os.environ.get('PWD') + '/'
+    node = os.environ.get('HOST')
+    command = f'condor_q {user} | grep {cwd}'
+    command_missing = f'python check_missing_files.py'
+    command_resubmit = f'sh resubmit.sh'
 
+    def __init__(self, email):
+        self.email = email
+        self.count_missing = 0
+        self.count_all = 0
+
+    def check_queue(self):
+        ### number of jobs found
+        navigator = RCFNavigator(self.command)
+        while True:
+            count_all = 0
+            count_running = 0
+            count_idle = 0
+            count_held = 0
+            status = 0
+            for line in navigator.get_output():
+                # if the current node is unaccessible
+                if "Failed to fetch ads" in line.decode('utf-8') and self.node in line.decode('utf-8'):
+                    print('Node is unaccessible, recheck in 10 minutes')
+                    status = 1
+                    break
+                if self.user not in line.decode('utf-8'):
+                    continue
+                count_all += 1
+                if ' R ' in line.decode('utf-8'):
+                    count_running += 1
+                if ' I ' in line.decode('utf-8'):
+                    count_idle += 1
+                if ' H ' in line.decode('utf-8'):
+                    count_held += 1
+            if status == 0:
+                break
+            time.sleep(600)
+        
+        self.count_all = count_all
+        print(f'Jobs found: {count_all}, Running: {count_running}, Idle: {count_idle}, Held: {count_held}')
+    
+    def check_missing(self):
+        navigator = RCFNavigator(self.command_missing)
+        self.count_missing = int(navigator.get_output().readline().decode('utf-8'))
+        print(f'Missing files: {self.count_missing}')
+
+    def resubmit(self):
+        navigator = RCFNavigator(self.command_resubmit)
+        navigator.get_output()
+        print(f'{self.count_missing} jobs resubmitted')
+    
+    def email_notification(self):
+        # just send email using shell mail (blank email body)
+        sp.run(['echo', f'Jobs on {self.node} completed', '|', 'mail', '-s', '"Job Completion"', self.email])
+               
+    def task(self):
+        self.check_queue()
+        self.check_missing()
+        if self.count_missing == 0:
+            if self.count_all == 0:
+                self.email_notification()
+                return True
+            else:
+                raise Exception('No missing files but jobs are still running???')
+        elif self.count_all == 0:
+            print('No jobs found, resubmitting...')
+            self.resubmit()
+        elif self.count_missing > 20 * self.count_all:
+            # it might be worth it to kill all jobs and resubmit in this case
+            print('Too many missing files, kill and resubmit remaining jobs')
+            LongKiller(0, 0).kill_bad_job()
+            self.resubmit()
+        return False
+
+    def loop(self, exit: threading.Event):
+        print(f'Starting from node {self.node}...')
+        while True:
+            done = self.task()
+            if done:
+                break
+            print('Check again in 10 minutes. Press Ctrl+\\ to check now')
+            exit.wait(600)
+            if exit.is_set():
+                exit.clear()
+                continue
+    
+    def start(self):
+        exit = threading.Event()
+        def quit(signo, _frame):
+            print(f'Interrupted by {signo}, checking now')
+            exit.set()
+        signal.signal(signal.SIGQUIT, quit)
+        self.loop(exit)
