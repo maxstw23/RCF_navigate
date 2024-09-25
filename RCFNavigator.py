@@ -25,7 +25,7 @@ class RCFNavigator:
         Initializer for RCF Navigator
         :param command: the command associated with the RCF query (i.e., condor_q, condor_rm)
         """
-        self.p = sp.Popen(command, shell=True, stdout=sp.PIPE)
+        self.p = sp.Popen(command, shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
 
     def get_process(self):
         """
@@ -39,6 +39,12 @@ class RCFNavigator:
         :return: the std output of the process
         """
         return self.p.stdout
+    
+    def get_error(self):
+        """
+        :return: the std error of the process
+        """
+        return self.p.stderr
 
 class AutoBuffer(queue.Queue):
     """
@@ -111,15 +117,19 @@ class LongKiller:
     node = os.environ.get('HOST')
     command = f'condor_q -global {user} | grep {cwd}'
 
-    def __init__(self, _day, _hour=0):
+    def __init__(self, _day, _hour=0, local=False):
         """
         Initializer, does pretty much everything
         :param _day: Day threshold
         :param _hour: Hour threshold
         """
         self.navigator = RCFNavigator(self.command)
+        self.local = local
+        if self.local:
+            self.command = f'condor_q {self.user} | grep {self.cwd}'
         self.bad_id_list = []
         self.bad_sched_list = []
+        self.hour_threshold = _day*24+_hour
 
         for line in self.navigator.get_output():
             # Popen std output contains an extra new line at the end
@@ -154,14 +164,16 @@ class LongKiller:
         (answering 'y' to the question 'Kill jobs anyway?')
         """
         # verify we are on the correct node
-        correct_node = NodeChecker().get_node()
-        if correct_node != self.node:
-            print(f'You are not on the right node! Go to {correct_node}.')
-            override = input("Kill jobs anyway? (y/n)")
-            if override != 'y':
-                return
+        if not self.local:
+            correct_node = NodeChecker().get_node()
+            if correct_node != self.node:
+                print(f'You are not on the right node! Go to {correct_node}.')
+                override = input("Kill jobs anyway? (y/n)")
+                if override != 'y':
+                    return
 
         # job killer
+        print(f'Killing {len(self.bad_id_list)} jobs that have been running for more than {self.hour_threshold} hours')
         for process in self.bad_id_list:
             sp.run(['condor_rm', process])
 
@@ -234,27 +246,32 @@ class JobMonitor:
     command_missing = f'python check_missing_files.py'
     command_resubmit = f'sh resubmit.sh'
 
-    def __init__(self, email):
+    def __init__(self, email, days=1, hours=0):
         self.email = email
         self.count_missing = 0
         self.count_all = 0
+        self.days = days
+        self.hours = hours
 
     def check_queue(self):
         ### number of jobs found
-        navigator = RCFNavigator(self.command)
         while True:
+            navigator = RCFNavigator(self.command)
             count_all = 0
             count_running = 0
             count_idle = 0
             count_held = 0
             status = 0
-            for line in navigator.get_output():
-                # if the current node is unaccessible
-                if "Failed to fetch ads" in line.decode('utf-8') and self.node in line.decode('utf-8'):
+            for line in navigator.get_error():
+                if 'Failed to fetch ads' in line.decode('utf-8') and self.node in line.decode('utf-8'):
                     print('Node is unaccessible, recheck in 10 minutes')
                     status = 1
                     break
-                if self.user not in line.decode('utf-8'):
+            if status == 1:
+                time.sleep(600)
+                continue
+            for line in navigator.get_output():
+                if self.user not in line.decode('utf-8') or ' X ' in line.decode('utf-8'):
                     continue
                 count_all += 1
                 if ' R ' in line.decode('utf-8'):
@@ -263,10 +280,8 @@ class JobMonitor:
                     count_idle += 1
                 if ' H ' in line.decode('utf-8'):
                     count_held += 1
-            if status == 0:
-                break
-            time.sleep(600)
-        
+            break
+
         self.count_all = count_all
         print(f'Jobs found: {count_all}, Running: {count_running}, Idle: {count_idle}, Held: {count_held}')
     
@@ -277,29 +292,41 @@ class JobMonitor:
 
     def resubmit(self):
         navigator = RCFNavigator(self.command_resubmit)
-        navigator.get_output()
+        output = navigator.get_output()
+        resubmit_count = 0
+        for line in output:
+            if 'files for process' in line.decode('utf-8') and 'done' in line.decode('utf-8'):
+                resubmit_count += 1
+        if resubmit_count != self.count_missing:
+            print(f'WARNING: number of resubmission ({resubmit_count}) does not match number of missing files ({self.count_missing}). Killing all jobs...')
+            LongKiller(0, 0, local=True).kill_bad_job()
         print(f'{self.count_missing} jobs resubmitted')
     
     def email_notification(self):
         # just send email using shell mail (blank email body)
-        sp.run(['echo', f'Jobs on {self.node} completed', '|', 'mail', '-s', '"Job Completion"', self.email])
+        script = '''{{
+    echo To: {0}
+    echo Subject: Job completion notification
+    echo
+    echo Jobs on node {1} have completed. Please check the output files.
+}} | /usr/sbin/sendmail -t'''.format(self.email, self.node)
+        sp.run(script, shell=True)
                
     def task(self):
         self.check_queue()
+        LongKiller(self.days, self.hours, local=True).kill_bad_job()
         self.check_missing()
-        if self.count_missing == 0:
+        if self.count_missing < 5:
             if self.count_all == 0:
                 self.email_notification()
                 return True
-            else:
-                raise Exception('No missing files but jobs are still running???')
         elif self.count_all == 0:
             print('No jobs found, resubmitting...')
             self.resubmit()
         elif self.count_missing > 20 * self.count_all:
             # it might be worth it to kill all jobs and resubmit in this case
             print('Too many missing files, kill and resubmit remaining jobs')
-            LongKiller(0, 0).kill_bad_job()
+            LongKiller(0, 0, local=True).kill_bad_job()
             self.resubmit()
         return False
 
