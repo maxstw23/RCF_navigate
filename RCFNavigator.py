@@ -26,6 +26,7 @@ class RCFNavigator:
         :param command: the command associated with the RCF query (i.e., condor_q, condor_rm)
         """
         self.p = sp.Popen(command, shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
+        self.out, self.err = self.p.communicate()
 
     def get_process(self):
         """
@@ -38,13 +39,13 @@ class RCFNavigator:
         Usually how information is obtained
         :return: the std output of the process
         """
-        return self.p.stdout
+        return self.out
     
     def get_error(self):
         """
         :return: the std error of the process
         """
-        return self.p.stderr
+        return self.err
 
 class AutoBuffer(queue.Queue):
     """
@@ -246,15 +247,21 @@ class JobMonitor:
     command_missing = f'python check_missing_files.py'
     command_resubmit = f'sh resubmit.sh'
 
-    def __init__(self, email, days=1, hours=0):
+    def __init__(self, email, days=1, hours=0, debug=False, glob=False):
         self.email = email
         self.count_missing = 0
         self.count_all = 0
         self.days = days
         self.hours = hours
+        self.debug = debug
+        self.glob = glob
+        if self.glob:
+            self.command = f'condor_q -global {self.user} | grep {self.cwd}'
 
     def check_queue(self):
         ### number of jobs found
+        if self.debug:
+            print('Checking queue...')
         while True:
             navigator = RCFNavigator(self.command)
             count_all = 0
@@ -262,6 +269,10 @@ class JobMonitor:
             count_idle = 0
             count_held = 0
             status = 0
+            if self.debug:
+                print('Checking command error...')
+            if self.glob:
+                self.node = NodeChecker().get_node()
             for line in navigator.get_error():
                 if 'Failed to fetch ads' in line.decode('utf-8') and self.node in line.decode('utf-8'):
                     print('Node is unaccessible, recheck in 10 minutes')
@@ -270,6 +281,8 @@ class JobMonitor:
             if status == 1:
                 time.sleep(600)
                 continue
+            if self.debug:
+                print('Checking command output...')
             for line in navigator.get_output():
                 if self.user not in line.decode('utf-8') or ' X ' in line.decode('utf-8'):
                     continue
@@ -287,7 +300,7 @@ class JobMonitor:
     
     def check_missing(self):
         navigator = RCFNavigator(self.command_missing)
-        self.count_missing = int(navigator.get_output().readline().decode('utf-8'))
+        self.count_missing = int(navigator.get_output().decode('utf-8'))
         print(f'Missing files: {self.count_missing}')
 
     def resubmit(self):
