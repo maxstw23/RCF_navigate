@@ -83,7 +83,7 @@ class NodeChecker:
         """
         self.navigator = RCFNavigator(self.command)
         self.buffer = AutoBuffer(maxsize=2)
-        for line in self.navigator.get_output():
+        for line in self.navigator.get_output().split(b'\n'):
             # Popen std output contains an extra new line at the end
             line_str = line[:-1].decode('utf-8')
             if self.cwd in line_str:
@@ -132,7 +132,9 @@ class LongKiller:
         self.bad_sched_list = []
         self.hour_threshold = _day*24+_hour
 
-        for line in self.navigator.get_output():
+        for line in self.navigator.get_output().split(b'\n'):
+            if line == b'':
+                break
             # Popen std output contains an extra new line at the end
             line_str = line[:-1].decode('utf-8')
             run_time_str = line_str.split()[4]
@@ -208,7 +210,7 @@ class DateGetter:
 
     def __init__(self):
         self.navigator = RCFNavigator(self.command)
-        line = self.navigator.get_output().readline()
+        line = self.navigator.get_output().split(b'\n').readline()
         self.month, self.date = [line.split()[i].decode('utf-8') for i in (1, 2)]
         # print(f'{month}_{date}')
 
@@ -228,7 +230,7 @@ class FileMover:
         :param query_dir: the directory with files with the desired names (NOT the working directory)
         """
         self.navigator = RCFNavigator(self.command + query_dir)
-        self.filenames = [filename[:-1].decode('utf-8') for filename in self.navigator.get_output()][2:]
+        self.filenames = [filename[:-1].decode('utf-8') for filename in self.navigator.get_output().split(b'\n')][2:]
 
     def move(self, working_dir, target_dir):
         for file in self.filenames:
@@ -273,7 +275,7 @@ class JobMonitor:
                 print('Checking command error...')
             if self.glob:
                 self.node = NodeChecker().get_node()
-            for line in navigator.get_error():
+            for line in navigator.get_error().split(b'\n'):
                 if 'Failed to fetch ads' in line.decode('utf-8') and self.node in line.decode('utf-8'):
                     print('Node is unaccessible, recheck in 10 minutes')
                     status = 1
@@ -283,7 +285,7 @@ class JobMonitor:
                 continue
             if self.debug:
                 print('Checking command output...')
-            for line in navigator.get_output():
+            for line in navigator.get_output().split(b'\n'):
                 if self.user not in line.decode('utf-8') or ' X ' in line.decode('utf-8'):
                     continue
                 count_all += 1
@@ -297,15 +299,22 @@ class JobMonitor:
 
         self.count_all = count_all
         print(f'Jobs found: {count_all}, Running: {count_running}, Idle: {count_idle}, Held: {count_held}')
+
+        # releasing held jobs
+        if count_held > 0:
+            print('Releasing held jobs...')
+            navigator = RCFNavigator(f'condor_release {self.user}')
+            for line in navigator.get_output().split(b'\n'):
+                print(line.decode('utf-8'))
     
     def check_missing(self):
         navigator = RCFNavigator(self.command_missing)
-        self.count_missing = int(navigator.get_output().decode('utf-8'))
+        self.count_missing = int(navigator.get_output().split(b'\n')[0].decode('utf-8'))
         print(f'Missing files: {self.count_missing}')
 
     def resubmit(self):
         navigator = RCFNavigator(self.command_resubmit)
-        output = navigator.get_output()
+        output = navigator.get_output().split(b'\n')
         resubmit_count = 0
         for line in output:
             if 'files for process' in line.decode('utf-8') and 'done' in line.decode('utf-8'):
@@ -321,8 +330,8 @@ class JobMonitor:
     echo To: {0}
     echo Subject: Job completion notification
     echo
-    echo Jobs on node {1} have completed. Please check the output files.
-}} | /usr/sbin/sendmail -t'''.format(self.email, self.node)
+    echo Jobs on node {1} have completed. Please check the output files in {2}.
+}} | /usr/sbin/sendmail -t'''.format(self.email, self.node, self.cwd)
         sp.run(script, shell=True)
                
     def task(self):
