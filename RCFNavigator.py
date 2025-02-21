@@ -127,10 +127,10 @@ class LongKiller:
         :param _day: Day threshold
         :param _hour: Hour threshold
         """
-        self.navigator = RCFNavigator(self.command)
         self.local = local
         if self.local:
             self.command = f'condor_q {self.user} | grep {self.cwd}'
+        self.navigator = RCFNavigator(self.command)
         self.bad_id_list = []
         self.bad_sched_list = []
         self.hour_threshold = _day*24+_hour
