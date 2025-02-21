@@ -91,6 +91,9 @@ class NodeChecker:
                 self.node = self.buffer.get().split()[2].split('.')[0]
                 break
             self.buffer.fill(line_str)
+        # if the node is not found, use the current host
+        if not hasattr(self, 'node'):
+            self.node = os.environ.get('HOST')
 
     def get_node(self):
         """
