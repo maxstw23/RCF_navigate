@@ -249,8 +249,8 @@ class JobMonitor:
     cwd = os.environ.get('PWD') + '/'
     node = os.environ.get('HOST')
     command = f'condor_q {user} | grep {cwd}'
-    command_missing = f'python check_missing_files.py'
-    command_resubmit = f'sh resubmit.sh'
+    command_missing = f'/star/u/maxwoo/python/Python-3.10.4/python check_missing_files.py'
+    # command_resubmit = f'sh resubmit.sh'
 
     def __init__(self, email, days=1, hours=0, debug=False, glob=False):
         self.email = email
